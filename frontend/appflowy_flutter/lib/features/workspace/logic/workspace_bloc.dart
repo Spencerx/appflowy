@@ -36,11 +36,10 @@ class _WorkspaceFetchResult {
 
 class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
   UserWorkspaceBloc({
-    required WorkspaceRepository repository,
-    required UserProfilePB userProfile,
+    required this.repository,
+    required this.userProfile,
     this.initialWorkspaceId,
-  })  : _repository = repository,
-        _listener = UserListener(userProfile: userProfile),
+  })  : _listener = UserListener(userProfile: userProfile),
         super(UserWorkspaceState.initial(userProfile)) {
     on<WorkspaceEventInitialize>(_onInitialize);
     on<WorkspaceEventFetchWorkspaces>(_onFetchWorkspaces);
@@ -56,10 +55,14 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     on<WorkspaceEventUpdateWorkspaceSubscriptionInfo>(
       _onUpdateWorkspaceSubscriptionInfo,
     );
+    on<WorkspaceEventEmitWorkspaces>(_onEmitWorkspaces);
+    on<WorkspaceEventEmitUserProfile>(_onEmitUserProfile);
+    on<WorkspaceEventEmitCurrentWorkspace>(_onEmitCurrentWorkspace);
   }
 
   final String? initialWorkspaceId;
-  final WorkspaceRepository _repository;
+  final WorkspaceRepository repository;
+  final UserProfilePB userProfile;
   final UserListener _listener;
 
   @override
@@ -72,7 +75,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     WorkspaceEventInitialize event,
     Emitter<UserWorkspaceState> emit,
   ) async {
-    await _setupListeners(emit);
+    await _setupListeners();
     await _initializeWorkspaces(emit);
   }
 
@@ -124,7 +127,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
       ),
     );
 
-    final result = await _repository.createWorkspace(
+    final result = await repository.createWorkspace(
       name: event.name,
       workspaceType: event.workspaceType,
     );
@@ -197,7 +200,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
       );
     }
 
-    final result = await _repository.deleteWorkspace(
+    final result = await repository.deleteWorkspace(
       workspaceId: event.workspaceId,
     );
     final workspacesResult = await _fetchWorkspaces();
@@ -264,7 +267,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
       ),
     );
 
-    final result = await _repository.openWorkspace(
+    final result = await repository.openWorkspace(
       workspaceId: event.workspaceId,
       workspaceType: event.workspaceType,
     );
@@ -310,7 +313,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     WorkspaceEventRenameWorkspace event,
     Emitter<UserWorkspaceState> emit,
   ) async {
-    final result = await _repository.renameWorkspace(
+    final result = await repository.renameWorkspace(
       workspaceId: event.workspaceId,
       name: event.name,
     );
@@ -364,7 +367,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
       return;
     }
 
-    final result = await _repository.updateWorkspaceIcon(
+    final result = await repository.updateWorkspaceIcon(
       workspaceId: event.workspaceId,
       icon: event.icon,
     );
@@ -409,7 +412,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     WorkspaceEventLeaveWorkspace event,
     Emitter<UserWorkspaceState> emit,
   ) async {
-    final result = await _repository.leaveWorkspace(
+    final result = await repository.leaveWorkspace(
       workspaceId: event.workspaceId,
     );
 
@@ -453,14 +456,14 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     WorkspaceEventFetchWorkspaceSubscriptionInfo event,
     Emitter<UserWorkspaceState> emit,
   ) async {
-    final enabled = await _repository.isBillingEnabled();
+    final enabled = await repository.isBillingEnabled();
     // If billing is not enabled, we don't need to fetch the workspace subscription info
     if (!enabled) {
       return;
     }
 
     unawaited(
-      _repository
+      repository
           .getWorkspaceSubscriptionInfo(
         workspaceId: event.workspaceId,
       )
@@ -499,34 +502,60 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     );
   }
 
-  Future<void> _setupListeners(Emitter<UserWorkspaceState> emit) async {
+  Future<void> _onEmitWorkspaces(
+    WorkspaceEventEmitWorkspaces event,
+    Emitter<UserWorkspaceState> emit,
+  ) async {
+    emit(
+      state.copyWith(
+        workspaces: _sortWorkspaces(event.workspaces),
+      ),
+    );
+  }
+
+  Future<void> _onEmitUserProfile(
+    WorkspaceEventEmitUserProfile event,
+    Emitter<UserWorkspaceState> emit,
+  ) async {
+    emit(
+      state.copyWith(userProfile: event.userProfile),
+    );
+  }
+
+  Future<void> _onEmitCurrentWorkspace(
+    WorkspaceEventEmitCurrentWorkspace event,
+    Emitter<UserWorkspaceState> emit,
+  ) async {
+    emit(
+      state.copyWith(currentWorkspace: event.workspace),
+    );
+  }
+
+  Future<void> _setupListeners() async {
     _listener.start(
       onProfileUpdated: (result) {
-        if (!isClosed && !emit.isDone) {
+        if (!isClosed) {
           result.fold(
-            (newProfile) => emit(
-              state.copyWith(userProfile: newProfile),
+            (newProfile) => add(
+              UserWorkspaceEvent.emitUserProfile(userProfile: newProfile),
             ),
             (error) => Log.error("Failed to get user profile: $error"),
           );
         }
       },
       onUserWorkspaceListUpdated: (workspaces) {
-        if (!isClosed && !emit.isDone) {
-          emit(
-            state.copyWith(
+        if (!isClosed) {
+          add(
+            UserWorkspaceEvent.emitWorkspaces(
               workspaces: _sortWorkspaces(workspaces.items),
             ),
           );
         }
       },
       onUserWorkspaceUpdated: (workspace) {
-        if (!isClosed && !emit.isDone) {
-          final currentWorkspace = state.currentWorkspace;
-          if (currentWorkspace?.workspaceId == workspace.workspaceId) {
-            emit(
-              state.copyWith(currentWorkspace: workspace),
-            );
+        if (!isClosed) {
+          if (state.currentWorkspace?.workspaceId == workspace.workspaceId) {
+            add(UserWorkspaceEvent.emitCurrentWorkspace(workspace: workspace));
           }
         }
       },
@@ -558,7 +587,7 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
 
     if (currentWorkspace != null && result.shouldOpenWorkspace == true) {
       Log.info('init open workspace: ${currentWorkspace.workspaceId}');
-      await _repository.openWorkspace(
+      await repository.openWorkspace(
         workspaceId: currentWorkspace.workspaceId,
         workspaceType: currentWorkspace.workspaceType,
       );
@@ -611,13 +640,13 @@ class UserWorkspaceBloc extends Bloc<UserWorkspaceEvent, UserWorkspaceState> {
     String? initialWorkspaceId,
   }) async {
     try {
-      final currentWorkspaceResult = await _repository.getCurrentWorkspace();
+      final currentWorkspaceResult = await repository.getCurrentWorkspace();
       final currentWorkspace = currentWorkspaceResult.fold(
         (s) => s,
         (e) => null,
       );
       final currentWorkspaceId = initialWorkspaceId ?? currentWorkspace?.id;
-      final workspacesResult = await _repository.getWorkspaces();
+      final workspacesResult = await repository.getWorkspaces();
       final workspaces = workspacesResult.getOrThrow();
 
       if (workspaces.isEmpty && currentWorkspace != null) {
